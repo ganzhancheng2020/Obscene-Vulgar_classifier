@@ -11,26 +11,59 @@ from peft import LoraConfig, TaskType, get_peft_model
 import os
 import torch
 from modelscope import snapshot_download
+
+from tqdm import tqdm
+import re
 torch.device('cuda')
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-model_dir = "Qwen/Qwen2.5-7B-Instruct"
+model_dir = "Qwen/Qwen3-8B"
 model = AutoModelForCausalLM.from_pretrained(model_dir, device_map="auto",torch_dtype=torch.bfloat16)
 tokenizer = AutoTokenizer.from_pretrained(model_dir)
 model.enable_input_require_grads()
 print(model.dtype)
 
 def compute_metrics(eval_pred):
-    predictions, labels = eval_pred
-    predictions = np.argmax(predictions, axis=1)
+    torch.cuda.empty_cache()
+    model.eval()  # 切换到评估模式
+    predictions, labels = [], []
     
-    # 过滤无效标签（-100）
-    valid_indices = labels != -100
-    predictions = predictions[valid_indices]
-    labels = labels[valid_indices]
-    print(labels)
+    # 分批生成文本（避免OOM）
+    for i in tqdm(range(0, len(eval_dataset), 1)):  # 小批量生成
+        batch = eval_dataset.select(range(i, min(i, len(eval_dataset))))
+        inputs = tokenizer(
+            batch["input"], 
+            padding=True, 
+            truncation=True, 
+            max_length=1024, 
+            return_tensors="pt"
+        ).to(model.device)
+        
+        # 生成文本（限制生成长度）
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=10,  # 类别标签通常很短
+            pad_token_id=tokenizer.pad_token_id
+        )
+        generated_texts = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+        
+        # 解析生成文本中的类别
+        for text in generated_texts:
+            match = re.search(r"类别：(\d+)", text)
+            predictions.append(int(match.group(1)) if match else -1)
+        
+        # 获取真实标签
+        true_labels = [int(re.search(r"类别：(\d+)", label).group(1)) for label in batch["output"]]
+        labels.extend(true_labels)
     
-    f1 = f1_score(labels, predictions, average='macro')  # 使用宏平均F1
+    # 过滤无效预测
+    valid_idx = [i for i, pred in enumerate(predictions) if pred != -1]
+    predictions = [predictions[i] for i in valid_idx]
+    labels = [labels[i] for i in valid_idx]
+    
+    # 计算F1
+    f1 = f1_score(labels, predictions, average="macro")
+    torch.cuda.empty_cache()
     return {"f1": f1}
 
 def data_processing(df):
@@ -50,13 +83,13 @@ def data_processing(df):
     return new_df
 
 def process_func(example):
-    MAX_LENGTH = 512 # 设置最大序列长度为1024个token
+    MAX_LENGTH = 1024 # 设置最大序列长度为1024个token
     input_ids, attention_mask, labels = [], [], [] # 初始化返回值
     # 适配chat_template
     instruction = tokenizer(
         f"<s><|im_start|>system\n<|im_end|>\n" 
         f"<|im_start|>user\n{example['instruction'] + example['input']}<|im_end|>\n"  
-        f"<|im_start|>assistant\n",  
+        f"<|im_start|>assistant\n<think>\n\n</think>\n\n",  
         add_special_tokens=False   
     )
     response = tokenizer(f"{example['output']}", add_special_tokens=False)
@@ -86,7 +119,8 @@ if __name__ == "__main__":
     dataset = tokenized_id.train_test_split(test_size=0.1)
     tokenized_id = dataset["train"]
     val_dataset = dataset["test"]
-    output_dir = "./output/Qwen2.5_7B_lora"
+    output_dir = "./output/Qwen3-8B_lora"
+    trained_model_path = "/root/data/Qwen/merged_qwen3_8b_lora"
     
     config = LoraConfig(
         task_type=TaskType.CAUSAL_LM, 
@@ -102,25 +136,25 @@ if __name__ == "__main__":
 
     args = TrainingArguments(
         output_dir=output_dir,
-        per_device_train_batch_size=1,
+        per_device_train_batch_size=2,
         gradient_accumulation_steps=4,
-        per_device_eval_batch_size=1,
-        label_names=["labels"],
+        per_device_eval_batch_size=2,
+        optim="adamw_torch",
+        lr_scheduler_type="cosine",
         eval_strategy="steps",  # 改为按步评估
-        eval_steps=50,
+        eval_steps=100,
         save_strategy="steps",
-        save_steps=50,
+        save_steps=100,
         logging_steps=50,
         num_train_epochs=3,
         learning_rate=5e-5,
+        weight_decay=0.01,
         fp16=True,
         gradient_checkpointing=True,
         load_best_model_at_end=True,  # 启用早停保存
-        metric_for_best_model="f1",
-        greater_is_better=True,
-        warmup_steps=100,
-        weight_decay=0.01,
-        max_grad_norm=1.0
+        metric_for_best_model="loss",
+        max_grad_norm=1.0,
+        save_total_limit=1
     )
 
     # Trainer配置
@@ -131,10 +165,8 @@ if __name__ == "__main__":
         train_dataset=tokenized_id,
         eval_dataset=val_dataset,
         data_collator=DataCollatorForSeq2Seq(tokenizer,padding=True),
-        compute_metrics=compute_metrics,
         callbacks=[EarlyStoppingCallback(
-            early_stopping_patience=3,
-            early_stopping_threshold=0.01
+            early_stopping_patience=3
         )]
     )
 
