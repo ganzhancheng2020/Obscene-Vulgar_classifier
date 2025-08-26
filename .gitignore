@@ -1,1 +1,4 @@
-Obscene-Vulgar_classifier/bert_model/my_bert_model/
+bert_model/output/
+bert_model/my_bert_model/
+Obscene-Vulgar_classifier/bert_model/my_bert_model/*
+Obscene-Vulgar_classifier/bert_model/output/*
