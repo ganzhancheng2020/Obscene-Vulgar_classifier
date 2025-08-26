@@ -8,7 +8,6 @@ from modelscope import snapshot_download
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 from peft import PeftModel
-
 import re
 
 # 自动下载模型时，指定使用modelscope; 否则，会从HuggingFace下载

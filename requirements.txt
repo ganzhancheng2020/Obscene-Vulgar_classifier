@@ -4,3 +4,5 @@ accelerate==1.6.0
 datasets==3.5.1
 peft==0.15.2
 swanlab==0.5.7
+seaborn==0.13.2
+scikit-learn

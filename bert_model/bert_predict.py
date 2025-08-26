@@ -23,6 +23,7 @@ def predict_batch(texts, model, tokenizer, device, batch_size=32, max_length=256
             batch_texts,
             truncation=True,
             padding="max_length",
+            max_length=max_length,
             return_tensors="pt"
         ).to(device)
         
@@ -40,7 +41,7 @@ def predict_batch(texts, model, tokenizer, device, batch_size=32, max_length=256
 if __name__ == "__main__":
     # 参数解析（默认路径设置）
     parser = argparse.ArgumentParser(description="BERT文本分类批量预测")
-    parser.add_argument("--input", type=str, default="./dataset/val_text.csv", 
+    parser.add_argument("--input", type=str, default="./dataset/test_text.csv", 
                         help="输入文件路径（默认：dataset/test_text.csv）")
     parser.add_argument("--output", type=str, default="./dataset/submit.csv", 
                         help="输出文件路径（默认：submit.csv）")
